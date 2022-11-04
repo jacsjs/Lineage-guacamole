@@ -1,0 +1,30 @@
+diff --git a/.repo/manifests/default.xml b/.repo/manifests/default.xml
+index 10629d8..0e4f7fa 100644
+--- a/.repo/manifests/default.xml
++++ b/.repo/manifests/default.xml
+@@ -13,6 +13,11 @@
+            review="android-review.googlesource.com"
+            revision="refs/tags/android-10.0.0_r41" />
+ 
++  <remote  name="opengapps" 
++           fetch="https://github.com/opengapps/"  />
++  <remote  name="opengapps-gitlab" 
++           fetch="https://gitlab.opengapps.org/opengapps/"  />
++
+   <default revision="refs/heads/lineage-17.1"
+            remote="github"
+            sync-c="true"
+@@ -691,6 +696,13 @@
+   <project path="tools/tradefederation/core" name="platform/tools/tradefederation" groups="pdk,tradefed" remote="aosp" />
+   <project path="tools/trebuchet" name="platform/tools/trebuchet" groups="tools,cts,pdk,pdk-cw-fs,pdk-fs" remote="aosp" />
+ 
++  <!-- OpenGApps sources -->
++  <project path="vendor/opengapps/build" name="aosp_build" revision="master" remote="opengapps" />
++  <project path="vendor/opengapps/sources/all" name="all" clone-depth="1" revision="master" remote="opengapps-gitlab" />
++  <project path="vendor/opengapps/sources/arm" name="arm" clone-depth="1" revision="master" remote="opengapps-gitlab" />
++  <project path="vendor/opengapps/sources/arm64" name="arm64" clone-depth="1" revision="master" remote="opengapps-gitlab" />
++  
++  
+   <include name="snippets/lineage.xml" />
+ 
+   <repo-hooks in-project="platform/tools/repohooks" enabled-list="pre-upload" />

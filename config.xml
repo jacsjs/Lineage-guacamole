@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- dir can be: root (android root), 
+                 device (device root for current active device.)
+                 common (device common root for current active device.) -->
+<setupConfig>
+    <buildType type="universal">    
+        <file dir="root">build/make/target/product/handheld_product.mk</file>
+        <file dir="root">build/make/target/product/handheld_system.mk</file>
+        <file dir="device">BoardConfig.mk</file>
+        <file dir="common">BoardConfigCommon.mk</file>
+    </buildType>
+    <buildType type="normal">
+    </buildType>
+    <buildType type="microg">
+        <file dir="root">frameworks/base/core/res/AndroidManifest.xml</file>
+        <file dir="root">frameworks/base/core/res/res/values/config.xml</file>
+        <file dir="root">frameworks/base/core/res/res/values/strings.xml</file>
+        <file dir="root">frameworks/base/services/core/java/com/android/server/pm/PackageManagerService.java</file>
+        <package>GmsCore</package>
+        <package>GsfProxy</package>
+        <package>FakeStore</package>
+        <package>MozillaNlpBackend</package>
+        <package>NominatimGeocoderBackend</package>
+        <patch dir="root">android_frameworks_base-Q.patch</patch>
+    </buildType>
+    <buildType type="opengapps">
+        <file dir="device">device.mk</file>
+        <patch dir="root">opengapps_config_setup_pico.patch</patch>
+    </buildType>
+    <buildType type="unifiednlp">
+        <file dir="device">device.mk</file>
+        <file dir="root">frameworks/base/core/res/res/values/config.xml</file>
+        <file dir="root">vendor/opengapps/build/overlay/pico/frameworks/base/core/res/res/values/config.xml</file>
+        <file dir="root">vendor/opengapps/build/overlay/pico/frameworks/base/packages/SettingsProvider/res/values/config.xml</file>
+        <file dir="root">vendor/lineage/overlay/common/frameworks/base/core/res/res/values/config.xml</file>
+        <file dir="root">device/sample/overlays/location/frameworks/base/core/res/res/values/config.xml</file>
+        <file dir="root">device/oneplus/sm8150-common/system.prop</file>
+        <patch dir="root">unifiednlp_location_config.patch</patch>
+        <patch dir="root">opengapps_config_setup_pico.patch</patch>
+        <package>UnifiedNlp</package>
+        <package>MozillaNlpBackend</package>
+        <package>LocalGsmNlpBackend</package>
+        <package>NominatimGeocoderBackend</package>
+    </buildType>
+    <device codename="guacamolee">
+        <file dir="root">build/make/tools/buildinfo.sh</file>
+        <file dir="root">build/make/tools/buildinfo_common.sh</file>
+        <file dir="root">build/make/core/Makefile</file>
+        <patch dir="root">buildinfo_guacamole.patch</patch>
+    </device>
+    <device codename="hotdog">
+        <patch dir="root">hotdog_device_patch.patch</patch>
+        <file dir="root">.repo/local_manifests/roomservice.xml</file>
+        <patch dir="root">oneplus_blobs_themuppets.patch</patch>
+    </device>
+</setupConfig>

@@ -1,0 +1,41 @@
+diff --git a/device/oneplus/guacamole/device.mk b/device/oneplus/guacamole/device.mk
+index 3041b89..dacb87d 100644
+--- a/device/oneplus/guacamole/device.mk
++++ b/device/oneplus/guacamole/device.mk
+@@ -9,6 +9,36 @@ $(call inherit-product, device/oneplus/sm8150-common/common.mk)
+ # Get non-open-source specific aspects
+ $(call inherit-product, vendor/oneplus/guacamole/guacamole-vendor.mk)
+ 
++# OpenGApps setup
++$(call inherit-product, vendor/opengapps/build/opengapps-packages.mk)
++
++# OpenGApps config
++GAPPS_VARIANT := pico
++
++## Apps removed from this list (installed)
++# PrebuiltGmsCore
++# GoogleServicesFramework
++# GmsCoreSetupPrebuilt
++# Phonesky
++
++GAPPS_EXCLUDED_PACKAGES := \
++    GoogleBackupTransport \
++    GoogleContactsSyncAdapter \
++    GoogleFeedback \
++    GoogleOneTimeInitializer \
++    GooglePartnerSetup \
++    GoogleLoginService \
++    SetupWizard \
++    GoogleCalendarSyncAdapter \
++    GoogleTTS \
++    GooglePackageInstaller \
++    Turbo \
++    AndroidMigratePrebuilt \
++    GoogleCalendarSyncAdapter \
++    GooglePartnerSetup \
++    GoogleOneTimeInitializer \
++    AndroidPlatformServices
++
+ # Overlays
+ DEVICE_PACKAGE_OVERLAYS += \
+     $(LOCAL_PATH)/overlay \

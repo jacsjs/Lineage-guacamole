@@ -1,0 +1,455 @@
+#!/bin/bash
+
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+
+DEVICE_CODENAME=""
+COMMON_DIR=""
+DEVICE_DIR=""
+
+AVB_KEY_PATH=""
+
+TYPE=""
+PACKAGES=()
+
+FILES_TO_EDIT=()
+PATCHES_TO_APPLY=()
+
+BACKUP_DIR="$DIR/backup"
+PATCH_DIR="$DIR/patches"
+PACKAGE_DIR="$DIR/packages"
+
+#Package prep
+DATA_PACKAGE_FILE=$PWD/build/make/target/product/handheld_product.mk
+SYSTEM_PACKAGE_FILE=$PWD/build/make/target/product/handheld_system.mk
+
+logLevel=0
+
+function display_help()
+{
+    echo "Type --help for this message."
+    exit 0
+}
+
+function display_state()
+{
+    echo "------------------------------------------------------------------------"
+    echo "DEVICE_CODENAME=$DEVICE_CODENAME"
+    echo "DEVICE_DIR=$DEVICE_DIR"
+    echo "COMMON_DIR=$COMMON_DIR"
+    echo "BUILD_TYPE=$TYPE"
+    echo "AVB_KEY_PATH=$AVB_KEY_PATH"
+    echo "BACKUP_DIR=$BACKUP_DIR"
+    echo "PATCH_DIR=$PATCH_DIR"
+    echo "PACKAGES=${PACKAGES[@]}"
+    echo "FILES_TO_EDIT=${FILES_TO_EDIT[@]}"
+    echo "PATHCES_TO_APPLY=${PATCHES_TO_APPLY[@]}"
+    echo "------------------------------------------------------------------------"
+}
+
+function log()
+{
+    case $2 in
+            "w" )
+                [[ logLevel -ne -1 ]] && echo "Warning: $1"
+            ;;
+            "e" )
+                [[ logLevel -ne -1 ]] && echo "Error: $1"
+            ;;
+            "d" )
+                [[ logLevel -ge 2 ]] && echo "Debug: $1"
+            ;;
+            * )
+                [[ logLevel -ge 1 ]] && echo "Log: $1"
+            ;;
+        esac
+}
+
+function setup_extra_packages
+{
+    for apk in "$@"
+        do
+            if [[ "$apk" =~ ^[^--].*$  ]]; then
+                PACKAGES+=($apk)
+            else
+                return
+            fi
+        done
+}
+
+function purge_old_packages()
+{
+    #Remove old packages
+    if [[ ! -e $BACKUP_DIR/currentPackages ]]; then
+        log "List of currently installed packages not found in '$BACKUP_DIR/currentPackages'. Not cleaning up old packages" "w"
+    else
+        TMP_PACKAGES_TO_REMOVE=(`cat "$BACKUP_DIR/currentPackages"`)
+        for REMOVE in "${TMP_PACKAGES_TO_REMOVE[@]}"
+        do
+            log "Removing: $REMOVE" "d"
+            if isSystemPackage "$PWD/packages/apps/$REMOVE"; then
+                sed -ie "/ \   \ $PACKAGE \\\\/d" $SYSTEM_PACKAGE_FILE
+            else
+                sed -ie "/ \   \ $PACKAGE \\\\/d" $DATA_PACKAGE_FILE
+            fi
+            rm -fr "$PWD/packages/apps/$REMOVE"
+            wait
+            if [[ -d "$PWD/packages/apps/$REMOVE" ]]; then
+                print_error "Package '' still exist, could not remove"
+            fi
+        done
+        echo "" > $BACKUP_DIR/currentPackages
+    fi
+}
+
+#TODO: REALLY SLOW, requires optimization. 
+#Probably because of "while [[ ! -z "$(grep $FILE -e '#BACKUP_FILE_ORIGINAL_LOCATION')" ]]"
+#Which scans through all backed up files.
+#Possible fix: Only read the last line, however that's done in bash...
+function restore_backup()
+{
+    log "Restoring backup..."
+    if [ "$(ls -A $BACKUP_DIR | grep -E '*.bak')" ]; then #if not empty directory
+        for FILE in $BACKUP_DIR/*.bak
+        do
+            local TMP_ORIG_LOC=`grep $FILE -e '#BACKUP_FILE_ORIGINAL_LOCATION' | cut -d'%' -f2`
+            
+            if [[ -z "$TMP_ORIG_LOC" ]]; then
+                log "Backup file '$FILE' is corrupt. Cannot restore backup." "e"
+                return 1
+            fi
+            
+            while [[ ! -z "$(grep $FILE -e '#BACKUP_FILE_ORIGINAL_LOCATION')" ]]
+            do
+                sed -i '$ d' $FILE
+            done
+            
+            mv $FILE $TMP_ORIG_LOC || log "Warning: Could not move file '$FILE' to '$TMP_ORIG_LOC' while attempting to restore" && sleep 3
+        done
+    else
+        log "No backup files found in backup directory '$BACKUP_DIR'. Not restoring." "w"
+        return 1
+    fi
+    log "Restoring backup Done!"
+}
+
+function print_error()
+{
+    log "$1" "e"
+    log "Reverting changes..."
+    restore_backup || log "Could not revert all changes, build may now be corrupt." "e"
+    log "Exiting..."
+    exit 1
+}
+
+function backup_files()
+{
+    log "Backing up files..."
+    if [[ ! -d $BACKUP_DIR ]]; then
+        print_error "Cannot perform a backup, backup folder '$BACKUP_DIR' does not exist."
+    fi
+    for FILE in "${FILES_TO_EDIT[@]}"
+    do
+        if [[ -e "$FILE" ]]; then
+            
+            TMP_FILE_TO_COPY="$BACKUP_DIR/$(basename $FILE).bak"
+            TMP_INC=1
+            while [[ -e $TMP_FILE_TO_COPY ]]
+            do
+                log "TMP_INC: $TMP_INC" "d"
+                TMP_FILE_TO_COPY="$BACKUP_DIR/$(basename $FILE)$TMP_INC.bak"
+                TMP_INC=$((TMP_INC+1))
+            done
+            cp "$FILE" "$TMP_FILE_TO_COPY" || print_error "Could not backup file '$FILE'"
+            echo "#BACKUP_FILE_ORIGINAL_LOCATION%$FILE" >> "$TMP_FILE_TO_COPY"
+        else
+            print_error "File '$FILE' scheduled for backup does not exist, this is an internal error"
+    fi
+    done
+    log "Done backing up files!"
+}
+
+#Return 0 if package is a system package (regardless of priv-app status or not)
+#Return 1 if package is a data package
+function isSystemPackage()
+{
+    if [[ ! -e "$1/Android.mk" ]]; then
+        print_error "'$1' is missing an Android.mk makefile, not a valid package."
+    fi
+    [[ -z "$(grep $1/Android.mk -Ee 'LOCAL_MODULE_PATH\s+:=\s+\$(TARGET_OUT_DATA)$')" ]]
+}
+
+# Arguments
+#
+# ParentName    ParentAttr    Content    ContentAttr
+#
+function patch_xml()
+{
+    eval local $2
+    eval local $4
+    if [[ "$type" == "universal" || "$type" == "$TYPE" || "$codename" == "$DEVICE_CODENAME" ]]
+    then
+        log "Patch '$3' for $1 $type, to be applied in $dir directory" "d"
+        local tmp_dir=""
+        case $dir in
+            "root" )
+                tmp_dir="$PWD"
+            ;;
+            "device" )
+                tmp_dir="$DEVICE_DIR"
+            ;;
+            "common" )
+                tmp_dir="$COMMON_DIR"
+            ;;
+            * )
+                print_error "A directory in config.xml for patch '$3' must be declared."
+            ;;
+        esac
+        PATCHES_TO_APPLY+=( "$tmp_dir/$3" )
+    fi
+}
+
+# Arguments
+#
+# ParentName    ParentAttr    Content    ContentAttr      
+#
+function file_xml()
+{
+    eval local $2
+    eval local $4
+
+    if [[ "$type" == "universal" || "$type" == "$TYPE" || "$codename" == "$DEVICE_CODENAME" ]]
+    then
+        log "File '$3' for $1 $type, to be applied in $dir directory" "d"
+        local tmp_dir=""
+        case $dir in
+            "root" )
+                tmp_dir="$PWD"
+            ;;
+            "device" )
+                tmp_dir="$DEVICE_DIR"
+            ;;
+            "common" )
+                tmp_dir="$COMMON_DIR"
+            ;;
+            * )
+                print_error "A directory in config.xml for file '$3' must be declared."
+            ;;
+        esac
+        FILES_TO_EDIT+=( "$tmp_dir/$3" )
+    fi
+}
+
+# Arguments
+#
+# ParentName    ParentAttr    Content    ContentAttr      
+#
+function package_xml()
+{
+    eval local $2
+    eval local $4
+
+    if [[ "$type" == "universal" || "$type" == "$TYPE" || "$codename" == "$DEVICE_CODENAME" ]]
+    then
+        log "Package '$3' for $1 $type will be applied." "d"
+        PACKAGES+=( "$3" )
+    fi
+}
+
+for arg in "$@"
+do
+    arg_1="$1";
+    shift;
+    case $arg in
+        "--help" )
+            display_help
+            ;;
+        "--restore" )
+            log "Trying to reset original state..."
+            restore_backup
+            purge_old_packages
+            log "Backup recovered with --restore."
+            exit 0
+            ;;
+        "--quiet" )
+            logLevel=-1
+            ;;
+        "--verbose" )
+            logLevel=1
+            ;;
+        "--debug" )
+            logLevel=2
+            ;;
+        "--device" )
+            DEVICE_CODENAME="$1"
+            ;;
+        "--type" )
+            TYPE="$1"
+            ;;
+        "--key" )
+            AVB_KEY_PATH="$1"
+            ;;
+        "--packages" )
+            setup_extra_packages "$@"
+            ;;
+    esac
+done
+
+#Check if root dir of android source tree
+if [[ ! ( -d "$PWD/frameworks" && -d "$PWD/packages" && -d "$PWD/device" && -d "$PWD/build" && -d "$PWD/.repo" ) ]]; then
+    print_error "Not calling script from root android source tree."
+fi
+
+if [[ -z "$DEVICE_CODENAME" ]]; then
+    print_error "A target device must be specified with --device"
+fi
+
+DEVICE_CODENAME=`echo "$DEVICE_CODENAME" | tr '[:upper:]' '[:lower:]'`
+DEVICE_DIR=$(find "$PWD/device" -name "$DEVICE_CODENAME")
+
+if [[ -z "$DEVICE_DIR" ]]; then
+    print_error "Target device '$DEVICE_CODENAME' does not have a directory under ./device"
+fi
+
+if [[ ! -e "$DEVICE_DIR/BoardConfig.mk" ]]; then
+    print_error "Target device '$DEVICE_CODENAME' does not have a BoardConfig.mk file"
+fi
+
+COMMON_DIR=`grep "$DEVICE_DIR/BoardConfig.mk" -e "-include.*device" | cut -d ' ' -f 2`
+COMMON_DIR=$(dirname $COMMON_DIR)
+
+if [[ -z "$COMMON_DIR" ]]; then
+    print_error "Target device '$DEVICE_CODENAME' does not have a common dir: '$COMMON_PATH'"
+fi
+
+if [[ ! -e "$AVB_KEY_PATH" ]]; then
+    print_error "Key '$AVB_KEY_PATH' for signing Android images does not exist."
+fi
+
+if [[ ! -e $DATA_PACKAGE_FILE ]]; then
+    print_error "File '$DATA_PACKAGE_FILE' for package meta-data does not exist."
+fi
+if [[ ! -e $SYSTEM_PACKAGE_FILE ]]; then
+    print_error "File '$SYSTEM_PACKAGE_FILE' for package meta-data does not exist."
+fi
+
+if [[ ! -e $DIR/config.xml ]]; then
+    print_error "XML Configuration for files and patches to apply does not exist at path '$DIR/config.xml'"
+fi
+
+function read_xml() 
+{
+    local IFS=\>
+    read -d \< ENTITY CONTENT
+    local ret=$?
+    TAG_NAME=${ENTITY%% *}
+    ATTRIBUTES=${ENTITY#* }
+    return $ret
+}
+
+function parse_xml() 
+{
+    log "Parsing xml config file..."
+    local CURRENT=()
+    local CURRENT_ATTR=()
+    while read_xml; do
+        CURRENT+=( "$TAG_NAME" )
+        CURRENT_ATTR+=( "$ATTRIBUTES" )
+        last=${CURRENT[-1]}
+        if [[ "${last::1}" == "/" ]]
+        then
+            unset 'CURRENT[${#CURRENT[@]}-1]'
+            unset 'CURRENT_ATTR[${#CURRENT_ATTR[@]}-1]'
+            if [[ "${last:1}" == "${CURRENT[-1]}" ]]
+            then
+                unset 'CURRENT[${#CURRENT[@]}-1]'
+                unset 'CURRENT_ATTR[${#CURRENT_ATTR[@]}-1]'
+            fi
+            if [[ "${last_content}" =~ [a-zA-Z0-9]+ ]] #if child node
+            then
+                # NodeName       ParentName         ParentAttr           Content       ContentAttr
+                ${last:1}_xml "${CURRENT[-1]}" "${CURRENT_ATTR[-1]}" "${last_content}" "$last_attr" 2>/dev/null
+                last_content=""
+                last_attr=""
+            fi
+        else
+            last_content=${CONTENT}
+            last_attr=${ATTRIBUTES}
+        fi
+    done
+    log "Parsing of XML file, Done!"
+}
+
+parse_xml < "$DIR/config.xml"
+
+############################## SETUP DONE #############################################
+
+#RESTORE BACKUP, TO A CLEAN STATE, IF A CLEAN STATE WAS FOUND.
+#Otherwise display a warning
+restore_backup
+backup_files
+
+#AVB related things, not very many lines, so patch files seems unnessesary
+#TODO: Integrate into patch files
+echo "#AVB Key Setup" >> $DEVICE_DIR/BoardConfig.mk
+echo "BOARD_AVB_ALGORITHM := SHA256_RSA4096" >> $DEVICE_DIR/BoardConfig.mk
+echo "BOARD_AVB_KEY_PATH := $AVB_KEY_PATH" >> $DEVICE_DIR/BoardConfig.mk
+
+sed -i 's/^BOARD_KERNEL_CMDLINE += androidboot.vbmeta.avb_version=1.0/BOARD_KERNEL_CMDLINE += androidboot.vbmeta.avb_version=2.0/' $COMMON_DIR/BoardConfigCommon.mk
+sed -i 's/^BOARD_AVB_MAKE_VBMETA_IMAGE_ARGS += --set_hashtree_disabled_flag/#BOARD_AVB_MAKE_VBMETA_IMAGE_ARGS += --set_hashtree_disabled_flag/' $COMMON_DIR/BoardConfigCommon.mk
+sed -i 's/^BOARD_AVB_MAKE_VBMETA_IMAGE_ARGS += --flags 2/#BOARD_AVB_MAKE_VBMETA_IMAGE_ARGS += --flags 2/' $COMMON_DIR/BoardConfigCommon.mk
+
+#Exception
+#TODO: Integrate into patch files
+if [[ "$TYPE" =~ ^([U|u]nified)?[N|n]lp$ ]]; then
+    #Change system.prop
+    sed -i 's/^ro.location.osnlp.package=com.google.android.gms/ro.location.osnlp.package=org.microg.nlp/' $COMMON_DIR/system.prop
+fi
+
+log "Removing old packages..."
+purge_old_packages
+
+log "Installing new packages..."
+#Package installation
+if [[ ! -d "$PACKAGE_DIR" ]]; then
+    print_error "Package directory '$PACKAGE_DIR' not found"
+else
+    CURRENT_INSTALLED_PACKAGES=()
+    for PACKAGE in "${PACKAGES[@]}"
+    do
+        if [[ ! -d "$PACKAGE_DIR/$PACKAGE" ]]; then
+            print_error "Required package '$PACKAGE' not found in package directory '$PACKAGE_DIR'"
+        else
+            if isSystemPackage "$PACKAGE_DIR/$PACKAGE"; then
+                log "$PACKAGE is system package" "d"
+                sed -ie "/^PRODUCT_PACKAGES/a \   \ $PACKAGE \\\\" $SYSTEM_PACKAGE_FILE
+            else #data package (not system package at all)
+                log "$PACKAGE is data package" "d"
+                sed -ie "/^PRODUCT_PACKAGES/a \   \ $PACKAGE \\\\" $DATA_PACKAGE_FILE
+            fi
+        fi
+        cp --archive $PACKAGE_DIR/$PACKAGE $PWD/packages/apps 
+        CURRENT_INSTALLED_PACKAGES+=($PACKAGE)
+    done
+    echo ${CURRENT_INSTALLED_PACKAGES[@]} > $BACKUP_DIR/currentPackages
+fi
+
+log "Applying patches..."
+#Patch installation
+if [[ ! -d "$PATCH_DIR" ]]; then
+    print_error "Patch directory '$PATCH_DIR' not found"
+else
+    for PATCH in "${PATCHES_TO_APPLY[@]}"
+    do
+        tmp_patch_file=$(basename $PATCH)
+        tmp_patch_dir=$(dirname $PATCH)
+        if [[ ! -e "$PATCH_DIR/$tmp_patch_file" ]]; then
+            print_error "Patch '$tmp_patch_file' does not exist in '$PATCH_DIR/$tmp_patch_file'. Cannot invoke required patch."
+        fi
+        #log "Applying patch '$PATCH' to build."
+        patch -s -p1 --no-backup-if-mismatch -d "$tmp_patch_dir" -i "$PATCH_DIR/$tmp_patch_file" || print_error "Could not patch with '$tmp_patch_file'."
+    done
+fi
+
+log "Applied patches successfully!"
+
+[[ logLevel -ne -1 ]] && display_state
